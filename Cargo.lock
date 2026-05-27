@@ -314,7 +314,7 @@ dependencies = [
 name = "credence_bond"
 version = "0.1.0"
 dependencies = [
- "proptest",
+ "soroban-sdk",
 ]
 
 [[package]]

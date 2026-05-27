@@ -38,6 +38,11 @@ pub fn require_not_paused(e: &Env) {
 pub fn set_pause_signer(e: &Env, admin: &Address, signer: &Address, enabled: bool) {
     require_admin_auth(e, admin);
 
+    // No-lockout invariants:
+    // 1. If there are active signers (count > 0), threshold MUST be > 0.
+    // 2. Threshold MUST be <= signer count.
+    // 3. Unpause MUST ALWAYS be reachable (admin override is available).
+
     let key = DataKey::PauseSigner(signer.clone());
     let existing: bool = e.storage().instance().get(&key).unwrap_or(false);
 
@@ -52,6 +57,16 @@ pub fn set_pause_signer(e: &Env, admin: &Address, signer: &Address, enabled: boo
             e.storage()
                 .instance()
                 .set(&DataKey::PauseSignerCount, &count.saturating_add(1));
+
+            // Auto-adjust threshold to 1 if it is currently 0, to maintain no-lockout invariant
+            let threshold: u32 = e
+                .storage()
+                .instance()
+                .get(&DataKey::PauseThreshold)
+                .unwrap_or(0);
+            if threshold == 0 {
+                e.storage().instance().set(&DataKey::PauseThreshold, &1_u32);
+            }
         }
     } else if existing {
         e.storage().instance().remove(&key);
@@ -97,6 +112,9 @@ pub fn set_pause_threshold(e: &Env, admin: &Address, threshold: u32) {
     if threshold > count {
         panic_with_error!(e, ContractError::ThresholdExceedsSigners);
     }
+    if threshold == 0 && count > 0 {
+        panic_with_error!(e, ContractError::InvalidPauseAction);
+    }
     e.storage()
         .instance()
         .set(&DataKey::PauseThreshold, &threshold);
@@ -116,6 +134,10 @@ fn require_pause_signer(e: &Env, signer: &Address) {
     }
 }
 
+/// Allocate a unique pause proposal id and advance the counter.
+///
+/// `PauseProposalCounter` stores the next unused proposal id.
+/// The allocated id is returned, and the counter is incremented to prevent reuse.
 fn next_proposal_id(e: &Env) -> u64 {
     let id: u64 = e
         .storage()
@@ -176,6 +198,19 @@ pub fn unpause(e: &Env, caller: &Address) -> Option<u64> {
         do_unpause(e, None);
         None
     } else {
+        // Admin override: Admin can always unpause without a proposal.
+        let stored_admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+
+        if *caller == stored_admin {
+            caller.require_auth();
+            do_unpause(e, None);
+            return None;
+        }
+
         propose_action(e, caller, PauseAction::Unpause)
     }
 }
@@ -247,6 +282,9 @@ pub fn execute_pause_proposal(e: &Env, proposal_id: u64) {
     e.storage()
         .instance()
         .remove(&DataKey::PauseProposal(proposal_id));
+    e.storage()
+        .instance()
+        .remove(&DataKey::PauseApprovalCount(proposal_id));
 }
 
 fn do_pause(e: &Env, proposal_id: Option<u64>) {

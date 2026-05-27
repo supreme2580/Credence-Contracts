@@ -29,7 +29,7 @@ pub fn slash_bond(e: &Env, admin: &Address, amount: i128) -> IdentityBond
 **Key Features:**
 - ✅ Admin-only authorization via `validate_admin()`
 - ✅ Partial and full slashing support
-- ✅ Over-slash prevention (capping at bonded_amount)
+- ✅ Over-slash prevention (rejects requests above bonded_amount)
 - ✅ Atomic state updates
 - ✅ Event emission for auditing
 - ✅ Arithmetic overflow protection
@@ -37,7 +37,7 @@ pub fn slash_bond(e: &Env, admin: &Address, amount: i128) -> IdentityBond
 **Security Properties:**
 1. Authorization check prevents non-admin slashing
 2. Checked arithmetic (`checked_add`) prevents overflow
-3. Capping logic prevents slashed_amount > bonded_amount
+3. Positive-amount validation and over-cap rejection prevent slashed_amount drift
 4. State persisted atomically to prevent partial updates
 
 #### Supporting Functions:
@@ -74,14 +74,15 @@ pub fn slash_bond(e: &Env, admin: &Address, amount: i128) -> IdentityBond
 
 **Category 3: Over-Slash Prevention (3 tests)**
 ```
-✅ test_slash_over_amount_capped
-✅ test_slash_way_over_amount_capped
-✅ test_slash_max_i128_capped
+✅ test_slash_over_amount_rejected
+✅ test_slash_way_over_amount_rejected
+✅ test_slash_max_i128_rejected
 ```
 
 **Category 4: Edge Cases (3 tests)**
 ```
-✅ test_slash_zero_amount
+✅ test_slash_zero_amount_rejected
+✅ test_slash_negative_amount_rejected
 ✅ test_slash_overflow_prevention - should panic "slashing caused overflow"
 ✅ test_slash_on_very_large_bond
 ```
@@ -113,7 +114,7 @@ pub fn slash_bond(e: &Env, admin: &Address, amount: i128) -> IdentityBond
 
 **Category 8: Cumulative Scenarios (5 tests)**
 ```
-✅ test_cumulative_slash_with_capping
+✅ test_cumulative_slash_with_rejection
 ✅ test_cumulative_slash_incremental
 ✅ test_full_slash_prevents_further_slashing
 ✅ test_slash_large_amounts
@@ -139,7 +140,7 @@ test test_slashing::test_error_message_no_bond - should panic ... ok
 test test_slashing::test_error_message_not_admin - should panic ... ok
 test test_slashing::test_cumulative_slash_incremental ... ok
 test test_slashing::test_full_slash_prevents_further_slashing ... ok
-test test_slashing::test_cumulative_slash_with_capping ... ok
+test test_slashing::test_cumulative_slash_with_rejection ... ok
 test test_slashing::test_slash_after_partial_withdrawal ... ok
 test test_slashing::test_slash_does_not_affect_other_fields ... ok
 test test_slashing::test_slash_basic_success ... ok
@@ -151,11 +152,11 @@ test test_slashing::test_slash_history_cumulative ... ok
 test test_slashing::test_slash_history_single_slash ... ok
 test test_slashing::test_slash_identity_cannot_slash_own_bond - should panic ... ok
 test test_slashing::test_slash_large_amounts ... ok
-test test_slashing::test_slash_max_i128_capped ... ok
+test test_slashing::test_slash_max_i128_rejected ... ok
 test test_slashing::test_slash_multiple_events ... ok
 test test_slashing::test_slash_multiple_accumulate ... ok
 test test_slashing::test_slash_on_very_large_bond ... ok
-test test_slashing::test_slash_over_amount_capped ... ok
+test test_slashing::test_slash_over_amount_rejected ... ok
 test test_slashing::test_slash_overflow_prevention - should panic ... ok
 test test_slashing::test_slash_result_matches_get_state ... ok
 test test_slashing::test_slash_small_amount ... ok
@@ -163,8 +164,9 @@ test test_slashing::test_slash_state_persists ... ok
 test test_slashing::test_slash_unauthorized_different_address - should panic ... ok
 test test_slashing::test_slash_unauthorized_rejection - should panic ... ok
 test test_slashing::test_slash_then_withdraw_then_slash_again ... ok
-test test_slashing::test_slash_way_over_amount_capped ... ok
-test test_slashing::test_slash_zero_amount ... ok
+test test_slashing::test_slash_way_over_amount_rejected ... ok
+test test_slashing::test_slash_zero_amount_rejected ... ok
+test test_slashing::test_slash_negative_amount_rejected ... ok
 test test_slashing::test_withdraw_after_slash_respects_available ... ok
 test test_slashing::test_withdraw_more_than_available_after_slash - should panic ... ok
 test test_slashing::test_withdraw_exact_available_balance ... ok
@@ -276,26 +278,26 @@ let new_slashed = bond.slashed_amount
 - Uses `checked_add()` to detect overflow before panic
 - Clear error message for debugging
 - No silent wrapping or loss of precision
+- Rejects zero and negative slash amounts before state changes
 
 **Over-Slash Prevention:**
 ```rust
-bond.slashed_amount = if new_slashed > bond.bonded_amount {
-    bond.bonded_amount  // Cap at bonded amount
-} else {
-    new_slashed
-};
+if new_slashed > bond.bonded_amount {
+    panic!("slash exceeds bond");
+}
 ```
 
 **Properties:**
 - Prevents slashed_amount > bonded_amount
+- Rejects over-cap requests instead of silently capping them
 - No funds are lost due to overflow
 - Monotonic increase guaranteed
 
 **Test Coverage:**
 - `test_slash_overflow_prevention` ✅
-- `test_slash_over_amount_capped` ✅
-- `test_slash_way_over_amount_capped` ✅
-- `test_slash_max_i128_capped` ✅
+- `test_slash_over_amount_rejected` ✅
+- `test_slash_way_over_amount_rejected` ✅
+- `test_slash_max_i128_rejected` ✅
 - `test_slash_on_very_large_bond` ✅
 - `test_slash_large_amounts` ✅
 
@@ -304,19 +306,20 @@ bond.slashed_amount = if new_slashed > bond.bonded_amount {
 **Atomic Updates:**
 ```rust
 // 1. Calculate and validate
+if amount <= 0 {
+    panic!("slash amount must be positive");
+}
 let new_slashed = bond.slashed_amount.checked_add(amount)?;
-let final_slashed = if new_slashed > bond.bonded_amount {
-    bond.bonded_amount
-} else {
-    new_slashed
-};
+if new_slashed > bond.bonded_amount {
+    panic!("slash exceeds bond");
+}
 
 // 2. Update state in one operation
-bond.slashed_amount = final_slashed;
+bond.slashed_amount = new_slashed;
 e.storage().instance().set(&key, &bond);
 
 // 3. Emit event (non-critical)
-emit_slashing_event(e, &bond.identity, amount, final_slashed);
+emit_slashing_event(e, &bond.identity, amount, new_slashed);
 ```
 
 **Properties:**
@@ -438,7 +441,7 @@ Coverage: 95%+ test coverage across all slashing paths
 - ✅ Partial slashing supported
 - ✅ Full slashing supported
 - ✅ `slashed_amount` updated in bond state
-- ✅ Over-slash prevention (capping)
+- ✅ Over-slash prevention (rejection)
 - ✅ Slashing events emitted
 - ✅ State consistency maintained
 - ✅ Atomic state updates

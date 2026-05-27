@@ -5,7 +5,8 @@ Verifiers add credibility attestations to identity bonds. Only authorized attest
 ## Data structure
 
 - **Attestation** — `id`, `verifier` (attester address), `identity` (subject address), `timestamp`, `weight`, `attestation_data`, `revoked`. Stored by ID; dedup key is (verifier, identity, attestation_data).
-- **Subject attestation count** — O(1) count per identity, updated on add/revoke.
+- **Subject attestations** — Live, non-revoked attestation IDs for an identity. Revoked IDs are removed from this index.
+- **Subject attestation count** — O(1) count per identity. This count is defined as the number of live, non-revoked IDs in `SubjectAttestations(identity)`.
 
 ## Authorization
 
@@ -30,17 +31,19 @@ Verifiers add credibility attestations to identity bonds. Only authorized attest
 
 - **revoke_attestation(attester, attestation_id, nonce)**  
   - Only the original verifier can revoke. Nonce consumed and incremented.  
-  - Subject attestation count is decremented; dedup key is removed so the same triple can be attested again.  
+  - The attestation is marked revoked, its ID is removed from the subject's live attestation index, and the subject attestation count is decremented with checked arithmetic.  
+  - The dedup key is removed so the same triple can be attested again.  
   - Emits `attestation_revoked`.
 
 ## Queries
 
 - **get_attestation(attestation_id)** — Returns the attestation or panics if not found.
-- **get_subject_attestations(subject)** — Returns list of attestation IDs for the identity.
-- **get_subject_attestation_count(subject)** — Returns the active attestation count for the identity.
+- **get_subject_attestations(subject)** — Returns live, non-revoked attestation IDs for the identity.
+- **get_subject_attestation_count(subject)** — Returns the active attestation count for the identity. It must equal `get_subject_attestations(subject).len()`.
 
 ## Security
 
 - Verifier must be authorized and pass require_auth.
 - Duplicate attestations (same verifier, identity, data) are prevented.
 - Replay is prevented via per-identity nonces; see security.md.
+- Attestation accounting uses checked arithmetic; overflow, underflow, or index/count drift is treated as an invariant failure instead of being silently saturated.

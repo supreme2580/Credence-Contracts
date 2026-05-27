@@ -16,7 +16,7 @@ The slashing mechanism is a governance-controlled penalty system that reduces a 
 ### Design Philosophy
 
 1. **Monotonic**: Slashing only increases, never decreases (unless unslashing by admin)
-2. **Fair**: Prevents over-slashing — slash is capped at *available balance* (`bonded - slashed`), not just `bonded`
+2. **Fair**: Prevents over-slashing — slash requests above the remaining available balance (`bonded - slashed`) are rejected
 3. **Transparent**: Events emit for all slashing operations; every slash is recorded in persistent history
 4. **Accountable**: Only authorized governance can execute
 
@@ -47,15 +47,16 @@ Core slashing function.
 **Behavior:**
 1. Validates caller is the contract admin (panics if not)
 2. Computes available balance = `bonded_amount - slashed_amount`
-3. Caps slash at available balance: `actual = min(amount, available)`
-4. Updates bond state with new `slashed_amount`
-5. Appends a normalized `SlashRecord` to persistent slash history
-6. Emits `bond_slashed` event
-7. Returns updated `IdentityBond` struct
+3. Rejects zero or negative slash amounts
+4. Rejects slash requests above available balance
+5. Updates bond state with new `slashed_amount` using checked arithmetic
+6. Appends a normalized `SlashRecord` to persistent slash history
+7. Emits `bond_slashed` event
+8. Returns updated `IdentityBond` struct
 
 **Arguments:**
 - `admin: Address` - Caller claiming admin authority
-- `amount: i128` - Amount to slash
+- `amount: i128` - Positive amount to slash
 
 **Returns:**
 - `IdentityBond` with updated `slashed_amount`
@@ -63,6 +64,8 @@ Core slashing function.
 **Panics:**
 - `"not admin"` if caller is not the contract admin
 - `"no bond"` if no bond exists
+- `"slash amount must be positive"` if `amount <= 0`
+- `"slash exceeds bond"` if the request would make `slashed_amount > bonded_amount`
 - `"slashing caused overflow"` if arithmetic overflows (unreachable in practice due to available-balance cap)
 
 **Example:**
@@ -97,15 +100,15 @@ Available: 1000 - 1000 = 0
 
 ### Over-Slash Prevention
 
-Slash is capped at the **available balance** (`bonded - slashed`), not just `bonded_amount`. This means a second slash cannot exceed what is actually withdrawable:
+Slash is bounded by the **available balance** (`bonded - slashed`), not just `bonded_amount`. A second slash cannot exceed what is actually withdrawable:
 
 ```
 Bonded: 1000
 Previous Slash: 700
 Available: 1000 - 700 = 300
 New Slash Request: 500
-Actual Slash: min(500, 300) = 300
-Final Slashed: 1000
+Result: rejected with "slash exceeds bond"
+Final Slashed: 700
 ```
 
 This is stricter than capping at `bonded_amount` alone and prevents any scenario where `slashed_amount` could exceed `bonded_amount`.
@@ -119,7 +122,7 @@ Every successful call to `slash_bond()` appends a normalized `SlashRecord` to pe
 ```rust
 pub struct SlashRecord {
     pub identity: Address,        // Slashed identity
-    pub slash_amount: i128,       // Actual amount slashed (after capping)
+    pub slash_amount: i128,       // Validated amount slashed
     pub reason: Symbol,           // "admin_slash"
     pub timestamp: u64,           // Ledger timestamp at slash time
     pub total_slashed_after: i128,// Cumulative slashed_amount after this slash
@@ -141,9 +144,9 @@ get_slash_record(e, identity, index) -> SlashRecord
 
 ### Notes
 
-- `slash_amount` in the record is the **actual** (capped) amount, not the requested amount.
+- `slash_amount` in the record is the validated amount applied to the bond.
 - Records are stored in `persistent` storage and survive ledger TTL extensions.
-- A zero-amount slash still appends a record (useful for audit completeness).
+- Zero and negative slash amounts are rejected and do not append records.
 
 ## State Management
 
@@ -217,7 +220,7 @@ client.slash(admin, 200);
 
 // Attempt third slash: 600 units (would exceed 1000)
 client.slash(admin, 600);
-// Event: (identity, 600, 1000)  [capped at bonded_amount]
+// Reverts: "slash exceeds bond"
 ```
 
 ## Security Considerations
@@ -245,8 +248,9 @@ let new_slashed = bond.slashed_amount
 
 ✅ **Over-Slash Prevention (available-balance bound):**
 ```rust
-let available = bond.bonded_amount - bond.slashed_amount;
-let actual_slash_amount = if amount > available { available } else { amount };
+if new_slashed > bond.bonded_amount {
+    panic!("slash exceeds bond");
+}
 ```
 
 ### 3. State Mutation Safety
@@ -287,12 +291,13 @@ available = bonded_amount - slashed_amount
    - Identity cannot slash own bond
 
 3. **Over-Slash Prevention (3 tests)**
-   - Amount exceeds bonded (normal capping)
+   - Amount exceeds bonded
    - Way over amount
-   - Max i128 value capping
+   - Max i128 value rejection
 
 4. **Edge Cases (3 tests)**
-   - Zero amount slashing
+   - Zero amount rejection
+   - Negative amount rejection
    - Overflow prevention
    - Very large bonds (i128::MAX / 2)
 
@@ -316,7 +321,7 @@ available = bonded_amount - slashed_amount
    - Complex slash/withdraw sequences
 
 8. **Cumulative Scenarios (5 tests)**
-   - Cumulative with capping
+   - Cumulative over-cap rejection
    - Incremental slashing
    - Full slash prevents further slashing
    - Large amount accumulation
@@ -330,8 +335,8 @@ available = bonded_amount - slashed_amount
     - "no bond" error
 
 11. **Available-Balance Bound (4 tests)**
-    - Slash capped at available (not bonded) after partial slash
-    - Zero-available is a no-op
+    - Slash rejected above available (not bonded) after partial slash
+    - Zero-available rejects further slashing
     - Available decreases after each slash
     - Slash after withdrawal respects new available
 
@@ -366,7 +371,7 @@ contract.slash(admin, 50);
 contract.slash(admin, 100);
 // slashed_amount = 150 (cumulative)
 
-// Third offense: attempt 20% but capped
+// Third offense: 20%
 contract.slash(admin, 200);
 // slashed_amount = 350 (if bonded >= 350)
 ```
@@ -374,9 +379,9 @@ contract.slash(admin, 200);
 ### Example 3: Full Bond Forfeiture
 
 ```rust
-// Severe violation: slash entire bond
-let bond = contract.slash(admin, 1000000); // arbitrary large amount
-// slashed_amount capped at bonded_amount (1000)
+// Severe violation: slash the remaining bond exactly
+let bond = contract.slash(admin, 1000);
+// slashed_amount equals bonded_amount (1000)
 // bonded_amount remains 1000
 // withdrawable = 0
 // Identity cannot withdraw

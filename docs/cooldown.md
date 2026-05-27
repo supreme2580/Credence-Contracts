@@ -79,7 +79,13 @@ Read the pending cooldown request for an address. Panics if no request exists.
   This prevents a holder from queuing multiple requests to bypass slashing.
 - **Bond holder verification**: Only the identity that owns the bond can request
   or execute a cooldown withdrawal.
-- **Overflow protection**: Timestamp arithmetic uses `saturating_add` to prevent
+- **Overflow protection**: Timestamp arithmetic uses `checked_add` to prevent
   overflow when `requested_at + period` would exceed `u64::MAX`.
 - **Admin-only configuration**: The cooldown period can only be modified by the
   contract admin.
+- **Rolling-bond notice enforcement**: For rolling bonds the notice window is
+  enforced directly in `withdraw` and `withdraw_bond`. Both entrypoints require
+  `withdrawal_requested_at != 0` and `now >= withdrawal_requested_at + notice_period_duration`
+  before any funds can leave. This is the same slashing window described above;
+  skipping `request_withdrawal` or calling `withdraw` before the window closes
+  panics on-chain and cannot be bypassed.

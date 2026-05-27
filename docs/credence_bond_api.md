@@ -44,9 +44,13 @@ An enum representing the user's reputation level:
 
 ## Initialization & Admin
 
-### `initialize(e: Env, admin: Address)`
+### `initialize(e: Env, admin: Address, token: Address)`
 
-Sets the primary administrator for the contract. This can only be called once.
+Sets the primary administrator and the custody token for the contract. This can only be called once.
+
+### `get_token(e: Env) -> Address`
+
+Returns the configured custody token address.
 
 ### `set_token(e: Env, admin: Address, token: Address)`
 
@@ -66,13 +70,35 @@ Whitelists an address to allow it to submit attestations for other identities.
 
 ### `create_bond(...)`
 
-Creates a standard or rolling bond. Transfers tokens from the identity to the contract.
+Creates a standard or rolling bond. Pulls approved custody tokens from the identity into the contract.
 
 * **Params**: `identity`, `amount`, `duration`, `is_rolling`, `notice_period_duration`.
+* **Auth**: `identity.require_auth()`
+* **Invariant**: on success, the contract custody increases by `amount`.
+
+#### Input Constraints
+
+All parameters are validated before the bond is created. Every violation returns a typed
+`ContractError` — no panics are used.
+
+| Parameter | Constraint | Error (code) |
+|-----------|-----------|--------------|
+| `amount: i128` | Must be strictly positive (`> 0`) | `InvalidBondAmount` (214) |
+| `duration: u64` | Must be strictly positive (`> 0`) | `InvalidBondDuration` (215) |
+| `notice_period_duration: u64` | When `is_rolling = true`: must be `> 0` | `InvalidNoticePeriod` (216) |
+| `notice_period_duration: u64` | When `is_rolling = true`: must be `<= duration` | `InvalidNoticePeriod` (216) |
+| `bond_start + duration` | Must not overflow `u64` | `Overflow` (700) |
+
+Checks are applied in the order listed above, so the first violated constraint is the one
+reported. For non-rolling bonds, `notice_period_duration` is stored but not validated.
+
+> See [`contracts/credence_bond/docs/bond-input-constraints.md`](../contracts/credence_bond/docs/bond-input-constraints.md)
+> for the full constraint reference including boundary examples and security notes.
 
 ### `top_up(e: Env, amount: i128)`
 
 Increases the stake of an existing bond to reach a higher `BondTier`.
+Pulls additional approved custody tokens from the bonded identity into the contract.
 
 ### `request_withdrawal(e: Env)`
 
@@ -88,7 +114,7 @@ Withdraws funds after the lock-up or notice period has elapsed.
 
 Withdraws funds before the duration is over.
 
-* **Penalty**: Applies a penalty defined in the `early_exit_penalty` module, which is sent to the treasury.
+* **Penalty**: Applies a penalty defined in the `early_exit_penalty` module, which is transferred to the treasury while the net amount is transferred to the bonded identity.
 
 ---
 
@@ -147,3 +173,4 @@ If the quorum is reached (e.g., 51% approval), the proposer executes this functi
 * **Reentrancy Guard**: Functions involving external callbacks use `with_reentrancy_guard` to prevent recursive attacks.
 * **CEI Pattern**: All state updates (Checks-Effects) happen before external token Interactions.
 * **Replay Prevention**: Nonces are consumed for every sensitive attestation action.
+* **Custody**: Real token escrow for `create_bond`, `top_up`, `withdraw`, and `withdraw_early` is documented in [bond-token-custody.md](bond-token-custody.md).

@@ -146,6 +146,11 @@ Submit a new proposal for multi-sig approval.
 **Returns:**
 - `u64` - Unique proposal ID
 
+**Notes:**
+- Proposal ids are auto-incremented and scoped per proposal.
+- Approval state and counts are recorded by proposal id to prevent cross-contamination between concurrent proposals.
+- Executed proposals clear proposal state and approval counters for the allocated id.
+
 **Panics:**
 - If caller is not a signer
 - If description is empty
@@ -354,8 +359,10 @@ client.remove_signer(&admin, &compromised_signer);
 
 ### Threshold Safety
 - Threshold must always be: 1 ≤ threshold ≤ signer count
+- Automatic threshold adjustment to 1 when first signer is added
 - Automatic threshold adjustment when removing signers
-- Cannot remove last signer
+- Cannot remove last signer without setting threshold appropriately (governance lockout protections)
+- Admin can override and directly execute an unpause action when required
 
 ### Overflow Protection
 - All arithmetic operations use checked arithmetic
