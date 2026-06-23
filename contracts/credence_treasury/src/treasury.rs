@@ -134,7 +134,12 @@ fn add_to_cumulative(e: &Env, current: &CumulativeAmount, amount: i128) -> Cumul
     }
 }
 
-fn proportional_deduction(e: &Env, source_balance: i128, amount: i128, total: i128) -> i128 {
+pub(crate) fn proportional_deduction(
+    e: &Env,
+    source_balance: i128,
+    amount: i128,
+    total: i128,
+) -> i128 {
     if source_balance == 0 || amount == 0 {
         return 0;
     }

@@ -403,7 +403,7 @@ mod tests {
     fn test_all_variants_count() {
         assert_eq!(
             all_variants().len(),
-            65,
+            66,
             "Update all_variants() and this count when adding new errors"
         );
     }

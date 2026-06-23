@@ -358,7 +358,14 @@ impl CredenceDelegation {
         // Nonce consumption (replay prevention)
         nonce::consume_nonce(&e, &owner, payload.nonce);
 
-        Self::store_delegation(&e, owner, delegate, delegation_type, expires_at, payload.scheme)
+        Self::store_delegation(
+            &e,
+            owner,
+            delegate,
+            delegation_type,
+            expires_at,
+            payload.scheme,
+        )
     }
 
     /// Relayer-friendly variant of `revoke_delegation`.

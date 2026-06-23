@@ -186,9 +186,9 @@ fn bump_instance_ttl(e: &Env) {
 #[allow(dead_code)]
 pub mod liquidation_reason {
     /// Bond has been fully slashed (`slashed_amount >= bonded_amount`).
-    pub const FULLY_SLASHED: &'static str = "fully_slashed";
+    pub const FULLY_SLASHED: &str = "fully_slashed";
     /// Bond lock-up period ended and the bond was not renewed / withdrawn.
-    pub const EXPIRED_UNRENEWED: &'static str = "expired_unrenewed";
+    pub const EXPIRED_UNRENEWED: &str = "expired_unrenewed";
 }
 
 /// Read-only snapshot of all contract-level configuration.
