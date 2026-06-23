@@ -385,6 +385,13 @@ pub enum ContractError {
     /// Wire-stable: do not renumber this error code.
     VerificationFailed = 507,
 
+    /// Post-expiry revocation attempted outside the configured grace window.
+    /// Triggered when `revocation_grace_period > 0` and
+    /// `now > expires_at + revocation_grace_period`.
+    /// Contracts: delegation
+    /// Wire-stable: do not renumber this error code.
+    RevocationGraceExpired = 508,
+
     // --- Shared Bond/Delegation payload mismatch errors (218-221) ---
     // Wire-stable: codes documented in the note above; kept distinct from the
     // delegation scheme/verifier errors (504-507).
@@ -538,7 +545,8 @@ impl ErrorExt for ContractError {
             | ContractError::UnknownScheme
             | ContractError::VerifierAlreadyRegistered
             | ContractError::VerifierNotRegistered
-            | ContractError::VerificationFailed => ErrorCategory::Delegation,
+            | ContractError::VerificationFailed
+            | ContractError::RevocationGraceExpired => ErrorCategory::Delegation,
 
             ContractError::AmountMustBePositive
             | ContractError::ThresholdExceedsSigners
@@ -641,6 +649,9 @@ impl ErrorExt for ContractError {
             }
             ContractError::VerificationFailed => {
                 "Signature verification failed for the given scheme and payload"
+            }
+            ContractError::RevocationGraceExpired => {
+                "Post-expiry revocation attempted outside the configured grace window"
             }
             ContractError::AmountMustBePositive => "Amount must be strictly positive (> 0)",
             ContractError::ThresholdExceedsSigners => {

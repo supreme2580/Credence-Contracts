@@ -61,6 +61,7 @@ mod tests {
             ContractError::VerifierAlreadyRegistered,
             ContractError::VerifierNotRegistered,
             ContractError::VerificationFailed,
+            ContractError::RevocationGraceExpired,
             ContractError::AmountMustBePositive,
             ContractError::ThresholdExceedsSigners,
             ContractError::InsufficientTreasuryBalance,

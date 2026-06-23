@@ -38,10 +38,26 @@ pub enum DelegationType {
     Management,
 }
 
+/// Lifecycle status for a delegation record.
+///
+/// `InGrace` is informational only: it does **not** confer delegate authority.
+/// Authorization checks use [`Self::is_valid_delegate`], which remains a hard
+/// cliff at `expires_at`.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DelegationStatus {
+    Active,
+    InGrace,
+    Expired,
+    Revoked,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AttestationStatus {
     Active,
+    InGrace,
+    Expired,
     Revoked,
     NotFound,
 }
@@ -54,6 +70,8 @@ pub struct Delegation {
     pub delegation_type: DelegationType,
     pub expires_at: u64,
     pub revoked: bool,
+    /// Ledger timestamp when revocation occurred; `0` while not revoked.
+    pub revoked_at: u64,
 }
 
 /// Aggregated view of a delegation's state for indexers and off-chain tools.
@@ -61,6 +79,7 @@ pub struct Delegation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DelegationSummary {
     pub is_valid: bool,
+    pub status: DelegationStatus,
     pub time_to_expiry: u64,
     pub delegation_type: DelegationType,
     pub revoked_at: u64,
@@ -116,6 +135,10 @@ pub enum DataKey {
     /// Verifier ID for a given signature scheme tag (scheme -> Address).
     /// Maps scheme tag (Ed25519=0, Secp256r1=1, MLDSA44=2) to a verifier address.
     Verifier(u32),
+    /// Admin-configured post-expiry window (seconds) for late revocation and
+    /// `InGrace` status reporting. Unset/`0` preserves hard-cliff expiry with
+    /// unlimited post-expiry revocation (legacy behaviour).
+    RevocationGracePeriod,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,9 +234,11 @@ impl CredenceDelegation {
 
     /// Revoke an existing delegation. Only the owner can revoke.
     ///
-    /// Expired delegations may still be revoked so the stored audit state can
-    /// reflect both facts: expired delegations are invalid before revocation,
-    /// and remain invalid after the `revoked` flag is set.
+    /// Active delegations may always be revoked. After `expires_at`, revocation
+    /// is allowed while `now <= expires_at + revocation_grace_period` when
+    /// `revocation_grace_period > 0`. When the grace period is `0` (default),
+    /// post-expiry revocation remains permitted at any time (legacy behaviour).
+    /// The real `revoked_at` timestamp is persisted on the delegation record.
     pub fn revoke_delegation(
         e: Env,
         owner: Address,
@@ -397,8 +422,14 @@ impl CredenceDelegation {
 
     /// Provides a derived summary of a delegation's current status.
     ///
-    /// This is a read-only view that aggregates validity, time-to-expiry,
+    /// This is a read-only view that aggregates validity, explicit lifecycle
+    /// status (`Active` / `InGrace` / `Expired` / `Revoked`), time-to-expiry,
     /// and metadata into a single struct. Useful for indexers.
+    ///
+    /// # Authority vs audit semantics
+    /// `is_valid` and [`Self::is_valid_delegate`] are identical for authorization:
+    /// both are `false` once `now >= expires_at`, even during `InGrace`.
+    /// `status == InGrace` is informational only and does not re-grant authority.
     pub fn get_delegation_summary(
         e: Env,
         owner: Address,
@@ -407,15 +438,17 @@ impl CredenceDelegation {
     ) -> DelegationSummary {
         let d = Self::get_delegation(e.clone(), owner, delegate, delegation_type);
         let now = e.ledger().timestamp();
-        let is_expired = now >= d.expires_at;
-        let is_valid = !d.revoked && !is_expired;
+        let grace = Self::revocation_grace_period(&e);
+        let status = Self::delegation_status(&d, now, grace);
+        let is_valid = !d.revoked && d.expires_at > now;
 
         DelegationSummary {
             is_valid,
+            status,
             time_to_expiry: d.expires_at.saturating_sub(now),
             delegation_type: d.delegation_type,
-            revoked_at: 0, // Placeholder: not currently recorded in Delegation struct
-            scheme: 0,     // Placeholder: defaults to Ed25519 (0)
+            revoked_at: d.revoked_at,
+            scheme: 0, // Placeholder: defaults to Ed25519 (0)
         }
     }
 
@@ -441,9 +474,11 @@ impl CredenceDelegation {
     /// Delegations expire exactly at `expires_at`: the record is valid only
     /// while `e.ledger().timestamp() < expires_at`.
     ///
-    /// # Expiry Boundary
-    /// - At `timestamp == expires_at` exactly, the delegation is already invalid (has expired).
+    /// # Expiry boundary and grace window
+    /// - At `timestamp == expires_at` exactly, the delegation is already invalid.
     /// - Returns `false` when `e.ledger().timestamp() >= expires_at`.
+    /// - The configurable `revocation_grace_period` affects audit status and
+    ///   late-revocation eligibility only; it does **not** extend authority.
     pub fn is_valid_delegate(
         e: Env,
         owner: Address,
@@ -470,14 +505,34 @@ impl CredenceDelegation {
         match e.storage().persistent().get::<_, Delegation>(&key) {
             Some(d) => {
                 nonce::bump_delegation_ttl(&e, &key, d.expires_at);
-                if d.revoked {
-                    AttestationStatus::Revoked
-                } else {
-                    AttestationStatus::Active
+                let now = e.ledger().timestamp();
+                let grace = Self::revocation_grace_period(&e);
+                match Self::delegation_status(&d, now, grace) {
+                    DelegationStatus::Active => AttestationStatus::Active,
+                    DelegationStatus::InGrace => AttestationStatus::InGrace,
+                    DelegationStatus::Expired => AttestationStatus::Expired,
+                    DelegationStatus::Revoked => AttestationStatus::Revoked,
                 }
             }
             None => AttestationStatus::NotFound,
         }
+    }
+
+    /// Configure the post-expiry grace window for late revocation and `InGrace`
+    /// status reporting. Only the admin may call. A value of `0` restores the
+    /// default hard-cliff expiry with unlimited post-expiry revocation.
+    pub fn set_revocation_grace_period(e: Env, admin: Address, grace_seconds: u64) {
+        pausable::require_not_paused(&e);
+        admin.require_auth();
+        Self::require_admin(&e, &admin);
+        e.storage()
+            .instance()
+            .set(&DataKey::RevocationGracePeriod, &grace_seconds);
+    }
+
+    /// Return the configured post-expiry grace window in seconds (`0` = default).
+    pub fn get_revocation_grace_period(e: Env) -> u64 {
+        Self::revocation_grace_period(&e)
     }
 
     /// Return the current nonce for `identity`.  Relayers query this before
@@ -707,6 +762,7 @@ impl CredenceDelegation {
             delegation_type,
             expires_at,
             revoked: false,
+            revoked_at: 0,
         };
         e.storage().persistent().set(&key, &d);
         nonce::bump_delegation_ttl(e, &key, expires_at);
@@ -736,11 +792,65 @@ impl CredenceDelegation {
             panic_with_error!(e, ContractError::AlreadyRevoked);
         }
 
+        let now = e.ledger().timestamp();
+        Self::require_revocation_allowed(e, &d, now);
+
         d.revoked = true;
+        d.revoked_at = now;
         e.storage().persistent().set(&key, &d);
         nonce::bump_delegation_ttl(e, &key, d.expires_at);
         e.events()
             .publish((Symbol::new(e, "delegation_revoked"),), d);
+    }
+
+    fn require_admin(e: &Env, admin: &Address) {
+        let stored_admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(e, ContractError::NotInitialized));
+        if admin != &stored_admin {
+            panic_with_error!(e, ContractError::NotAdmin);
+        }
+    }
+
+    fn revocation_grace_period(e: &Env) -> u64 {
+        e.storage()
+            .instance()
+            .get(&DataKey::RevocationGracePeriod)
+            .unwrap_or(0)
+    }
+
+    /// Derive the audit lifecycle status for a delegation at `now`.
+    fn delegation_status(d: &Delegation, now: u64, grace: u64) -> DelegationStatus {
+        if d.revoked {
+            return DelegationStatus::Revoked;
+        }
+        if now < d.expires_at {
+            return DelegationStatus::Active;
+        }
+        if grace > 0 {
+            let grace_end = d.expires_at.saturating_add(grace);
+            if now <= grace_end {
+                return DelegationStatus::InGrace;
+            }
+        }
+        DelegationStatus::Expired
+    }
+
+    /// Enforce post-expiry revocation bounds when a grace window is configured.
+    fn require_revocation_allowed(e: &Env, d: &Delegation, now: u64) {
+        if now < d.expires_at {
+            return;
+        }
+        let grace = Self::revocation_grace_period(e);
+        if grace == 0 {
+            return;
+        }
+        let grace_end = d.expires_at.saturating_add(grace);
+        if now > grace_end {
+            panic_with_error!(e, ContractError::RevocationGraceExpired);
+        }
     }
 }
 
