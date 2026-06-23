@@ -289,3 +289,41 @@ fn test_scan_emits_page_event() {
     let events_after = e.events().all().len();
     assert!(events_after > events_before);
 }
+
+#[test]
+fn test_scan_mixed_ratio_identities_over_threshold() {
+    let e = Env::default();
+    let (client, admin) = setup(&e);
+    let keeper = Address::generate(&e);
+
+    let user_safe = Address::generate(&e);
+    let user_liquidatable = Address::generate(&e);
+
+    client.register_bond_holder(&admin, &user_safe);
+    client.register_bond_holder(&admin, &user_liquidatable);
+
+    let safe_bond = crate::IdentityBond {
+        bonded_amount: 100,
+        slashed_amount: 10,
+        active: true,
+    };
+    e.storage().set(&crate::DataKey::Bond(user_safe.clone()), &safe_bond);
+
+    let unsafe_bond = crate::IdentityBond {
+        bonded_amount: 100,
+        slashed_amount: 60,
+        active: true,
+    };
+    e.storage().set(&crate::DataKey::Bond(user_liquidatable.clone()), &unsafe_bond);
+
+    let result = client.scan_liquidation_candidates(&keeper, &0, &10, &5000);
+
+    assert_eq!(result.candidates.len(), 1, "Only the liquidatable bond candidate should be flagged");
+    
+    let candidate = result.candidates.get(0).unwrap();
+    assert_eq!(candidate.identity, user_liquidatable);
+    assert_eq!(candidate.bonded_amount, 100);
+    assert_eq!(candidate.slashed_amount, 60);
+    assert_eq!(candidate.net_amount, 40);
+    assert!(result.done);
+}

@@ -313,11 +313,11 @@ pub fn scan_liquidation_candidates(
             continue;
         }
 
-        // Fetch bond state for this identity
+        // Pass the specific identity into the tuple variant key setup
         if let Some(bond) = e
             .storage()
             .instance()
-            .get::<_, crate::IdentityBond>(&DataKey::Bond)
+            .get::<_, crate::IdentityBond>(&DataKey::Bond(identity.clone()))
         {
             // Only consider active bonds
             if !bond.active {
@@ -331,10 +331,12 @@ pub fn scan_liquidation_candidates(
                 continue;
             }
 
-            // Check slash ratio: slashed / bonded >= min_slash_ratio_bps / 10000
-            let slash_ratio_bps = crate::math::ceil_div_i128(slashed * 10_000, bonded, "ratio overflow");
-            // Check slash ratio: slashed / bonded >= min_slash_ratio_bps / math::BPS_DENOMINATOR
-            let slash_ratio_bps = (slashed * crate::math::BPS_DENOMINATOR) / bonded;
+            // FIXED: Removed the shadowed computation variable and used checked math multiplication vectors safely
+            let slash_ratio_bps = slashed
+                .checked_mul(crate::math::BPS_DENOMINATOR)
+                .and_then(|v| v.checked_div(bonded))
+                .unwrap_or(0);
+
             if slash_ratio_bps >= min_slash_ratio_bps as i128 {
                 candidates.push_back(LiquidationCandidate {
                     identity,

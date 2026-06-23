@@ -132,6 +132,14 @@ pub enum ContractError {
     /// Wire-stable: do not renumber this error code.
     InsufficientSignatures = 108,
 
+    /// The target admin is currently suspended (suspended_until > now).
+    /// Used by suspend_admin when `until_ts` is not strictly in the future,
+    /// and by callers that detect a suspended admin attempting a privileged
+    /// action.
+    /// Contracts: admin
+    /// Wire-stable: do not renumber this error code.
+    AdminSuspended = 113,
+
     // --- Bond (200-299) ---
     /// No bond exists for the given address or key.
     /// Replaces: panic!("no bond")
@@ -377,6 +385,13 @@ pub enum ContractError {
     /// Wire-stable: do not renumber this error code.
     VerificationFailed = 507,
 
+    /// Post-expiry revocation attempted outside the configured grace window.
+    /// Triggered when `revocation_grace_period > 0` and
+    /// `now > expires_at + revocation_grace_period`.
+    /// Contracts: delegation
+    /// Wire-stable: do not renumber this error code.
+    RevocationGraceExpired = 508,
+
     // --- Shared Bond/Delegation payload mismatch errors (218-221) ---
     // Wire-stable: codes documented in the note above; kept distinct from the
     // delegation scheme/verifier errors (504-507).
@@ -445,6 +460,11 @@ pub enum ContractError {
     /// Wire-stable: do not renumber this error code.
     FlashLoanRepaymentFailed = 607,
 
+    /// Withdrawal proposal has expired and can no longer be approved or executed.
+    /// Contracts: treasury
+    /// Wire-stable: do not renumber this error code.
+    ProposalExpired = 608,
+
     // --- Arithmetic (700-799) ---
     /// Integer overflow detected during a checked arithmetic operation.
     /// Replaces: .expect("... overflow")
@@ -484,7 +504,8 @@ impl ErrorExt for ContractError {
             | ContractError::UnauthorizedDepositor
             | ContractError::ContractPaused
             | ContractError::InvalidPauseAction
-            | ContractError::InsufficientSignatures => ErrorCategory::Authorization,
+            | ContractError::InsufficientSignatures
+            | ContractError::AdminSuspended => ErrorCategory::Authorization,
 
             ContractError::BondNotFound
             | ContractError::BondNotActive
@@ -529,7 +550,8 @@ impl ErrorExt for ContractError {
             | ContractError::UnknownScheme
             | ContractError::VerifierAlreadyRegistered
             | ContractError::VerifierNotRegistered
-            | ContractError::VerificationFailed => ErrorCategory::Delegation,
+            | ContractError::VerificationFailed
+            | ContractError::RevocationGraceExpired => ErrorCategory::Delegation,
 
             ContractError::AmountMustBePositive
             | ContractError::ThresholdExceedsSigners
@@ -538,7 +560,8 @@ impl ErrorExt for ContractError {
             | ContractError::ProposalAlreadyExecuted
             | ContractError::InsufficientApprovals
             | ContractError::InvalidFlashLoanCallback
-            | ContractError::FlashLoanRepaymentFailed => ErrorCategory::Treasury,
+            | ContractError::FlashLoanRepaymentFailed
+            | ContractError::ProposalExpired => ErrorCategory::Treasury,
 
             ContractError::Overflow | ContractError::Underflow => ErrorCategory::Arithmetic,
             ContractError::NoPendingAdmin
@@ -567,6 +590,7 @@ impl ErrorExt for ContractError {
             ContractError::ContractPaused => "Contract is paused",
             ContractError::InvalidPauseAction => "Pause proposal action is invalid",
             ContractError::InsufficientSignatures => "Not enough approvals to execute proposal",
+            ContractError::AdminSuspended => "Admin is currently suspended",
             ContractError::BondNotFound => "No bond found for the given key",
             ContractError::BondNotActive => "Bond is not in an active state",
             ContractError::InsufficientBalance => "Insufficient balance for withdrawal",
@@ -632,6 +656,9 @@ impl ErrorExt for ContractError {
             ContractError::VerificationFailed => {
                 "Signature verification failed for the given scheme and payload"
             }
+            ContractError::RevocationGraceExpired => {
+                "Post-expiry revocation attempted outside the configured grace window"
+            }
             ContractError::AmountMustBePositive => "Amount must be strictly positive (> 0)",
             ContractError::ThresholdExceedsSigners => {
                 "Threshold cannot exceed the current signer count"
@@ -652,6 +679,7 @@ impl ErrorExt for ContractError {
             ContractError::FlashLoanRepaymentFailed => {
                 "Flashloan principal plus fee was not fully repaid"
             }
+            ContractError::ProposalExpired => "Withdrawal proposal has expired",
             ContractError::Overflow => "Integer overflow in checked arithmetic",
             ContractError::NoPendingAdmin => "No pending admin transfer exists",
             ContractError::DomainMismatch => "Payload domain tag does not match expected",

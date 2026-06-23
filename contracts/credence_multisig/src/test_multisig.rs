@@ -959,3 +959,196 @@ fn test_signer_management_workflow() {
         ProposalStatus::Executed
     );
 }
+
+#[test]
+fn test_prune_expired_proposals_basic() {
+    use soroban_sdk::FromVal;
+    let e = Env::default();
+    e.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let (client, admin, signers) = setup(&e);
+    client.initialize(&admin, &signers, &2);
+
+    let proposer = signers.get(0).unwrap();
+    let signer2 = signers.get(1).unwrap();
+
+    // Proposal 0: Expired (expires_at = 1200, now = 1000) -> will be expired after timestamp advances
+    let id0 = client.submit_proposal(
+        &proposer,
+        &ActionType::ConfigChange,
+        &None,
+        &None,
+        &None,
+        &String::from_str(&e, "Expired proposal"),
+        &1200_u64,
+        &None,
+        &BytesN::from_array(&e, &[30; 32]),
+    );
+
+    // Proposal 1: Pending (expires_at = 2000, now = 1000) -> not expired
+    let id1 = client.submit_proposal(
+        &proposer,
+        &ActionType::ConfigChange,
+        &None,
+        &None,
+        &None,
+        &String::from_str(&e, "Pending proposal"),
+        &2000_u64,
+        &None,
+        &BytesN::from_array(&e, &[31; 32]),
+    );
+
+    // Proposal 2: Executed (expires_at = 1200) -> will not be pruned because status is Executed
+    let id2 = client.submit_proposal(
+        &proposer,
+        &ActionType::ConfigChange,
+        &None,
+        &None,
+        &None,
+        &String::from_str(&e, "Executed proposal"),
+        &1200_u64,
+        &None,
+        &BytesN::from_array(&e, &[32; 32]),
+    );
+
+    client.sign_proposal(&proposer, &id2);
+    client.sign_proposal(&signer2, &id2);
+    client.execute_proposal(&id2);
+
+    // Proposal 3: Rejected (expires_at = 1200) -> will be expired after timestamp advances -> pruned
+    let id3 = client.submit_proposal(
+        &proposer,
+        &ActionType::ConfigChange,
+        &None,
+        &None,
+        &None,
+        &String::from_str(&e, "Rejected proposal"),
+        &1200_u64,
+        &None,
+        &BytesN::from_array(&e, &[33; 32]),
+    );
+    client.reject_proposal(&admin, &id3);
+
+    // Sign Proposal 0
+    client.sign_proposal(&proposer, &id0);
+
+    // Move time past 1200 (to 1300)
+    e.ledger().with_mut(|li| {
+        li.timestamp = 1300;
+    });
+
+    // Check pre-conditions
+    assert_eq!(client.get_proposal(&id0).status, ProposalStatus::Pending);
+    assert_eq!(client.get_signature_count(&id0), 1);
+    assert_eq!(client.has_signed(&id0, &proposer), true);
+
+    // Now prune starting from ID 0
+    let pruned = client.prune_expired_proposals(&0, &10);
+    assert_eq!(pruned, 2); // id0 and id3 are pruned
+
+    // Verify pruned proposals are gone
+    assert!(client.try_get_proposal(&id0).is_err());
+    assert!(client.try_get_proposal(&id3).is_err());
+
+    // Verify signatures are removed
+    assert_eq!(client.get_signature_count(&id0), 0);
+    assert_eq!(client.has_signed(&id0, &proposer), false);
+
+    // Verify non-expired proposal 1 is NOT pruned
+    let prop1 = client.get_proposal(&id1);
+    assert_eq!(prop1.status, ProposalStatus::Pending);
+
+    // Verify executed proposal 2 is NOT pruned and its executed op_hash is preserved
+    let prop2 = client.get_proposal(&id2);
+    assert_eq!(prop2.status, ProposalStatus::Executed);
+    assert_eq!(client.is_operation_executed(&BytesN::from_array(&e, &[32; 32])), true);
+
+    // Verify event
+    let prune_events: std::vec::Vec<_> = e.events().all()
+        .iter()
+        .filter(|ev| {
+            ev.0 == client.address
+                && soroban_sdk::Symbol::from_val(&e, &ev.1.get(0).unwrap()) == soroban_sdk::Symbol::new(&e, "proposals_pruned")
+        })
+        .collect();
+    
+    assert_eq!(prune_events.len(), 1);
+    let event_data = <(u64, u32)>::from_val(&e, &prune_events[0].2);
+    assert_eq!(event_data, (0, 2));
+}
+
+#[test]
+fn test_prune_expired_proposals_max_iter() {
+    let e = Env::default();
+    e.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let (client, admin, signers) = setup(&e);
+    client.initialize(&admin, &signers, &2);
+
+    let proposer = signers.get(0).unwrap();
+
+    // Create 5 expired proposals (id 0 to 4)
+    for i in 0..5 {
+        client.submit_proposal(
+            &proposer,
+            &ActionType::ConfigChange,
+            &None,
+            &None,
+            &None,
+            &String::from_str(&e, "Expired"),
+            &1200_u64,
+            &None,
+            &BytesN::from_array(&e, &[i; 32]),
+        );
+    }
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = 1300;
+    });
+
+    // Prune with max_iter = 2 starting at 0
+    let pruned1 = client.prune_expired_proposals(&0, &2);
+    assert_eq!(pruned1, 2); // prunes 0 and 1
+
+    // Verify 0 and 1 are gone, 2 is still there
+    assert!(client.try_get_proposal(&0).is_err());
+    assert!(client.try_get_proposal(&1).is_err());
+    assert!(client.get_proposal(&2).id == 2);
+
+    // Prune with max_iter = 10 starting at 2
+    let pruned2 = client.prune_expired_proposals(&2, &10);
+    assert_eq!(pruned2, 3); // prunes 2, 3, 4
+
+    assert!(client.try_get_proposal(&2).is_err());
+    assert!(client.try_get_proposal(&3).is_err());
+    assert!(client.try_get_proposal(&4).is_err());
+}
+
+#[test]
+fn test_prune_expired_proposals_nonexistent() {
+    let e = Env::default();
+    let (client, admin, signers) = setup(&e);
+    client.initialize(&admin, &signers, &2);
+
+    // Prune on non-existent proposals should just return 0 without panicking
+    let pruned = client.prune_expired_proposals(&100, &10);
+    assert_eq!(pruned, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #106)")]
+fn test_prune_expired_proposals_paused() {
+    let e = Env::default();
+    let (client, admin, signers) = setup(&e);
+    client.initialize(&admin, &signers, &2);
+
+    client.pause(&admin);
+    assert_eq!(client.is_paused(), true);
+
+    // Calling prune while paused should panic with ContractPaused (#106)
+    client.prune_expired_proposals(&0, &10);
+}

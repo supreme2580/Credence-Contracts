@@ -61,6 +61,7 @@ mod tests {
             ContractError::VerifierAlreadyRegistered,
             ContractError::VerifierNotRegistered,
             ContractError::VerificationFailed,
+            ContractError::RevocationGraceExpired,
             ContractError::AmountMustBePositive,
             ContractError::ThresholdExceedsSigners,
             ContractError::InsufficientTreasuryBalance,
@@ -93,6 +94,7 @@ mod tests {
         assert_eq!(ContractError::ContractPaused as u32, 106);
         assert_eq!(ContractError::InvalidPauseAction as u32, 107);
         assert_eq!(ContractError::InsufficientSignatures as u32, 108);
+        assert_eq!(ContractError::AdminSuspended as u32, 113);
     }
 
     #[test]
