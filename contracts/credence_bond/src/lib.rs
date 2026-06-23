@@ -20,7 +20,6 @@ mod weighted_attestation;
 pub mod types;
 
 /// Reusable bond-invariant assertion library (test-only).
-#[cfg(test)]
 pub mod test_invariants;
 
 /// Chaos testing suite for simulating host and token failures.

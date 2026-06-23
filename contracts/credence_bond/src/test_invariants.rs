@@ -36,6 +36,7 @@
 //!
 //! See `docs/bond-invariants.md` for owners and rationale.
 
+#![cfg(test)]
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
 
