@@ -42,6 +42,9 @@ jobs:
       - name: Build
         run: cargo build --all-targets
 
+      - name: Generate cost baseline (required by cost benchmark)
+        run: cargo run -p credence_bond --bin update-cost-baseline
+
       - name: Run tests
         run: cargo test --all-targets
 
